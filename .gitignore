@@ -1,0 +1,27 @@
+# Videos, datos y resultados privados
+data/
+*.mp4
+*.m4v
+*.mov
+*.avi
+*.webm
+*.mkv
+*.task
+
+# Dependencias y entornos
+node_modules/
+dist/
+.venv/
+venv/
+.deps/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+.codex-deps/
+
+# Archivos temporales de inspección
+video_review.jpg
+
+*.tsbuildinfo
