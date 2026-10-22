@@ -1,35 +1,120 @@
 import { useEffect, useRef, useState } from 'react';
-import * as THREE from 'three';
+import AvatarView from './components/AvatarView';
+import PoseOverlay from './components/PoseOverlay';
+import { frameAt, reliable, type Motion } from './motion';
 
-type Landmark = { x: number; y: number; z: number; visibility: number; presence: number };
-type Motion = { duration_ms: number; width: number; height: number; landmark_names: string[]; frames: { timestamp_ms: number; landmarks: Landmark[] }[] };
-const CONNECTIONS: [string, string][] = [['left_shoulder','right_shoulder'],['left_shoulder','left_elbow'],['left_elbow','left_wrist'],['right_shoulder','right_elbow'],['right_elbow','right_wrist'],['left_shoulder','left_hip'],['right_shoulder','right_hip'],['left_hip','right_hip'],['left_hip','left_knee'],['left_knee','left_ankle'],['right_hip','right_knee'],['right_knee','right_ankle'],['left_ankle','left_heel'],['right_ankle','right_heel'],['left_heel','left_foot_index'],['right_heel','right_foot_index']];
-
-function Skeleton({ motion, time }: { motion: Motion; time: number }) {
-  const host = useRef<HTMLDivElement>(null);
-  const rig = useRef<{ renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: THREE.OrthographicCamera; bones: THREE.LineSegments; joints: THREE.Points } | undefined>(undefined);
-  useEffect(() => {
-    if (!host.current) return;
-    const scene = new THREE.Scene(); scene.background = new THREE.Color('#141b18');
-    const camera = new THREE.OrthographicCamera(-1.1, 1.1, 1.8, -0.2, 0.1, 100); camera.position.set(0, 0, 10);
-    const renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    host.current.appendChild(renderer.domElement);
-    const bones = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({color:'#a4f27d'})); scene.add(bones);
-    const joints = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({color:'#f3f6ee',size:0.075,sizeAttenuation:true})); scene.add(joints);
-    const resize = () => { if (!host.current) return; renderer.setSize(host.current.clientWidth,host.current.clientHeight); const aspect=host.current.clientWidth/host.current.clientHeight; camera.left=-1.2*aspect; camera.right=1.2*aspect; camera.updateProjectionMatrix(); };
-    resize(); const observer = new ResizeObserver(resize); observer.observe(host.current);
-    rig.current={renderer,scene,camera,bones,joints};
-    return () => { observer.disconnect(); renderer.dispose(); host.current?.removeChild(renderer.domElement); };
-  }, []);
-  useEffect(() => { const r=rig.current; if (!r) return; const frame=motion.frames.reduce((a,b)=>Math.abs(b.timestamp_ms-time)<Math.abs(a.timestamp_ms-time)?b:a,motion.frames[0]); const pts=frame.landmarks; const ids=new Map(motion.landmark_names.map((n,i)=>[n,i])); const good=(name:string)=>{const p=pts[ids.get(name)??-1];return p&&p.visibility>=0.5?p:null}; const bonePositions:number[]=[]; for(const [a,b] of CONNECTIONS){const p=good(a),q=good(b);if(p&&q)bonePositions.push((p.x-.5)*-2,1.6-p.y*1.8,0,(q.x-.5)*-2,1.6-q.y*1.8,0)} const jointsPositions:number[]=[];for(const p of pts)if(p.visibility>=0.5)jointsPositions.push((p.x-.5)*-2,1.6-p.y*1.8,0);r.bones.geometry.dispose();r.bones.geometry=new THREE.BufferGeometry();r.bones.geometry.setAttribute('position',new THREE.Float32BufferAttribute(bonePositions,3));r.joints.geometry.dispose();r.joints.geometry=new THREE.BufferGeometry();r.joints.geometry.setAttribute('position',new THREE.Float32BufferAttribute(jointsPositions,3));r.renderer.render(r.scene,r.camera); },[motion,time]);
-  return <div className="rig" ref={host} />;
+const ACCEPT = '.jpg,.jpeg,.png,.webp,.mp4,.m4v,.mov,image/jpeg,image/png,image/webp,video/mp4';
+function mediaKind(file: File): 'image' | 'video' {
+  return file.type.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(file.name) ? 'image' : 'video';
 }
 
 export default function App() {
-  const video=useRef<HTMLVideoElement>(null); const [file,setFile]=useState<File|null>(null); const [url,setUrl]=useState(''); const [motion,setMotion]=useState<Motion|null>(null); const [busy,setBusy]=useState(false); const [error,setError]=useState(''); const [time,setTime]=useState(0); const [showPoints,setShowPoints]=useState(true);
-  useEffect(()=>{if(!file){setUrl('');return}const u=URL.createObjectURL(file);setUrl(u);return()=>URL.revokeObjectURL(u)},[file]);
-  const analyze=async()=>{if(!file)return;setBusy(true);setError('');setMotion(null);try{const body=new FormData();body.append('video',file);const response=await fetch('/api/analyze',{method:'POST',body});const data=await response.json();if(!response.ok)throw new Error(data.detail||'No se pudo analizar el video.');setMotion(data)}catch(e){setError(e instanceof Error?e.message:'Error al conectar con el servicio Python.')}finally{setBusy(false)}};
-  const draw=(el:HTMLCanvasElement|null)=>{const v=video.current;if(!el||!v||!motion||!showPoints)return;const ctx=el.getContext('2d')!;const box=v.getBoundingClientRect();el.width=box.width*devicePixelRatio;el.height=box.height*devicePixelRatio;el.style.width=`${box.width}px`;el.style.height=`${box.height}px`;ctx.scale(devicePixelRatio,devicePixelRatio);const f=motion.frames.reduce((a,b)=>Math.abs(b.timestamp_ms-time*1000)<Math.abs(a.timestamp_ms-time*1000)?b:a,motion.frames[0]);const ids=new Map(motion.landmark_names.map((n,i)=>[n,i]));ctx.lineWidth=3;ctx.strokeStyle='#a4f27d';ctx.fillStyle='#f3f6ee';for(const [a,b] of CONNECTIONS){const p=f.landmarks[ids.get(a)??-1],q=f.landmarks[ids.get(b)??-1];if(!p||!q||p.visibility<.5||q.visibility<.5)continue;ctx.beginPath();ctx.moveTo(p.x*box.width,p.y*box.height);ctx.lineTo(q.x*box.width,q.y*box.height);ctx.stroke()}for(const p of f.landmarks)if(p.visibility>=.5){ctx.beginPath();ctx.arc(p.x*box.width,p.y*box.height,4,0,Math.PI*2);ctx.fill()}};
-  useEffect(()=>{draw(document.querySelector('.overlay'))},[time,motion,showPoints,url]);
-  return <main><header><div className="brand"><span className="mark">V</span><div><b>VISION3D <em>AI</em></b><small>ANÁLISIS DE MOVIMIENTO</small></div></div><span className="step">PROTOTIPO · 01</span></header><section className="intro"><p className="eyebrow">PRIMERA PRUEBA · SENTADILLA</p><h1>Observa el movimiento, <i>articulación por articulación.</i></h1><p className="sub">Carga un video para ver los puntos corporales que detecta el modelo, fotograma a fotograma.</p></section><section className="workspace"><div className="video-card"><div className="card-head"><span><b>01</b> VIDEO DE ENTRADA</span><label className="upload">{file?'Cambiar video':'＋ Elegir video'}<input type="file" accept="video/mp4,video/quicktime,video/x-m4v,.m4v,.mp4,.mov" onChange={e=>{setFile(e.target.files?.[0]??null);setMotion(null);setTime(0)}}/></label></div><div className="stage">{url?<><video ref={video} src={url} controls onTimeUpdate={e=>setTime(e.currentTarget.currentTime)} onSeeked={e=>setTime(e.currentTarget.currentTime)}/><canvas className="overlay"/></>:<div className="empty"><div className="upload-icon">↑</div><b>Tu video aparecerá aquí</b><span>MP4 o M4V · una persona · cuerpo completo</span><label className="pick">Seleccionar video<input type="file" accept="video/mp4,video/quicktime,video/x-m4v,.m4v,.mp4,.mov" onChange={e=>{setFile(e.target.files?.[0]??null);setMotion(null)}}/></label></div>}</div><div className="video-footer"><span>{file?file.name:'Sin video seleccionado'}</span><button className="analyze" disabled={!file||busy} onClick={analyze}>{busy?'Detectando articulaciones…':'Analizar video →'}</button></div></div><div className="rig-card"><div className="card-head"><span><b>02</b> ESQUELETO ESTIMADO</span><span className="live"><i/> {motion?'POSE DETECTADA':'EN ESPERA'}</span></div>{motion?<Skeleton motion={motion} time={time*1000}/>:<div className="rig-placeholder"><div className="silhouette">●<span>╱│╲<br/>╱ ╲</span></div><b>El esqueleto aparecerá aquí</b><span>Los puntos siguen el tiempo del video</span></div>}<div className="rig-footer"><label className="toggle"><input type="checkbox" checked={showPoints} onChange={e=>setShowPoints(e.target.checked)}/> Mostrar puntos sobre video</label><span>{motion?`${motion.frames.length} muestras · ${Math.round(motion.duration_ms/100)/10} s`:'MediaPipe Pose Landmarker'}</span></div></div></section>{error&&<p className="error">{error}</p>}<section className="notice"><span>ⓘ</span><p><b>Estimación visual, no diagnóstico.</b> La cámara, la ropa, la iluminación y las articulaciones ocultas afectan la detección. Los puntos con baja visibilidad se omiten.</p></section><footer>VISION3D AI <span>·</span> Procesamiento local en esta primera prueba</footer></main>
+  const video = useRef<HTMLVideoElement>(null);
+  const pending = useRef<AbortController | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [url, setUrl] = useState('');
+  const [motion, setMotion] = useState<Motion | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [time, setTime] = useState(0);
+  const [showPoints, setShowPoints] = useState(true);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState(1);
+  const kind = file ? mediaKind(file) : 'image';
+  const frame = frameAt(motion, time * 1000);
+  const visible = frame?.landmarks.filter(reliable).length ?? 0;
+
+  useEffect(() => {
+    if (!file) { setUrl(''); return; }
+    const u = URL.createObjectURL(file);
+    setUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [file]);
+  useEffect(() => () => pending.current?.abort(), []);
+  useEffect(() => {
+    if (!playing) return;
+    let id = 0;
+    const tick = () => { if (video.current) setTime(video.current.currentTime); id = requestAnimationFrame(tick); };
+    tick();
+    return () => cancelAnimationFrame(id);
+  }, [playing]);
+  useEffect(() => { if(video.current) video.current.playbackRate = speed; }, [speed, url]);
+
+  const selectFile = (next: File | null) => {
+    pending.current?.abort(); pending.current = null;
+    setFile(next); setMotion(null); setError(''); setTime(0); setBusy(false); setPlaying(false);
+  };
+  const analyze = async () => {
+    if (!file) return;
+    pending.current?.abort();
+    const controller = new AbortController(); pending.current = controller;
+    video.current?.pause();
+    setBusy(true); setError(''); setMotion(null);
+    try {
+      const body = new FormData(); body.append(kind === 'image' ? 'image' : 'video', file);
+      const response = await fetch(kind === 'image' ? '/api/analyze-image' : '/api/analyze', { method:'POST', body, signal:controller.signal });
+      if (!response.headers.get('content-type')?.includes('application/json')) throw new Error('No se pudo conectar con el servicio Python. Comprueba que esté abierto en el puerto 8765.');
+      const data = await response.json();
+      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'No se pudo analizar este archivo.');
+      if (pending.current !== controller) return;
+      if (!Array.isArray(data.frames) || !data.frames.length) throw new Error('El archivo no produjo fotogramas utilizables.');
+      setMotion(data);
+      const t = video.current?.currentTime ?? 0; setTime(t);
+    } catch(e) {
+      if (!controller.signal.aborted) setError(e instanceof Error ? e.message : 'No se pudo conectar con el servicio Python.');
+    } finally {
+      if (pending.current === controller) { pending.current = null; setBusy(false); }
+    }
+  };
+  const download = () => {
+    if(!motion)return;
+    const data = URL.createObjectURL(new Blob([JSON.stringify(motion)], {type:'application/json'}));
+    const a = document.createElement('a'); a.href=data; a.download='vision3d-pose.json'; a.click(); setTimeout(()=>URL.revokeObjectURL(data),1000);
+  };
+  const fileInput = (label: string, className: string) => <label className={className}>{label}<input aria-label={label} type="file" accept={ACCEPT} onChange={e=>{selectFile(e.target.files?.[0]??null);e.target.value='';}} /></label>;
+
+  return <main>
+    <header>
+      <div className="brand"><span className="mark">V</span><div><b>VISION3D <em>AI</em></b><small>ESTIMACIÓN DE POSTURA</small></div></div>
+      <span className="step">PROTOTIPO LOCAL</span>
+    </header>
+    <section className="intro">
+      <p className="eyebrow">UNA PERSONA · UNA IMAGEN O VIDEO</p>
+      <h1>Tu postura,<br/><i>punto por punto.</i></h1>
+      <p className="sub">Carga una foto y observa su postura estimada en un muñeco 3D. Con un video, el muñeco sigue el movimiento.</p>
+    </section>
+    <section className="workspace">
+      <div className="video-card">
+        <div className="card-head"><span><b>01</b> {file ? kind==='image'?'IMAGEN ORIGINAL':'VIDEO ORIGINAL' : 'TU ARCHIVO'}</span>{fileInput(file?'Cambiar archivo':'Elegir archivo','upload')}</div>
+        <div className="stage">
+          {url ? <>
+            {kind==='image' ? <img src={url} alt="Imagen seleccionada para estimar la postura" onError={()=>setError('El navegador no pudo abrir esta imagen. Prueba JPG o PNG.')} /> :
+              <video ref={video} src={url} controls onTimeUpdate={e=>setTime(e.currentTarget.currentTime)} onPlay={()=>setPlaying(true)} onPause={()=>setPlaying(false)} onEnded={()=>setPlaying(false)} onError={()=>setError('No se pudo reproducir este video. Prueba MP4 con códec H.264.')} />}
+            <PoseOverlay frame={frame} motion={motion} visible={showPoints} />
+          </> : <div className="empty"><div className="upload-icon">↑</div><b>Empieza con una foto o un video</b><span>Cuerpo completo · una sola persona</span>{fileInput('Seleccionar archivo','pick')}<small>JPG, PNG, WebP · MP4, M4V, MOV</small></div>}
+          {busy && <div className="processing" role="status"><span className="spinner" />Detectando puntos corporales…</div>}
+        </div>
+        <div className="video-footer"><span title={file?.name}>{file?.name??'Imagen: hasta 20 MB · video: 100 MB / 60 s'}</span><button className="analyze" disabled={!file||busy} onClick={analyze}>{busy?'Procesando…':'Estimar postura →'}</button></div>
+      </div>
+      <div className="rig-card">
+        <div className="card-head"><span><b>02</b> MUÑECO 3D ESTIMADO</span><span className="live"><i/>{motion?frame?.landmarks.length?'POSE DETECTADA':'SIN DETECCIÓN':'EN ESPERA'}</span></div>
+        <AvatarView frame={frame} motion={motion} />
+        <div className="rig-footer"><span><i className="legend-dot green"/> Mayor visibilidad</span><span><i className="legend-dot gray"/> Baja confianza</span></div>
+      </div>
+    </section>
+    {error && <p className="error" role="alert">{error}</p>}
+    {motion && <section className="results">
+      <div className="result-row"><label className="toggle"><input type="checkbox" checked={showPoints} onChange={e=>setShowPoints(e.target.checked)}/> Puntos sobre el original</label><span>{visible} / 33 puntos con visibilidad suficiente</span><button className="text-button" onClick={download}>Descargar JSON ↓</button></div>
+      {!frame?.landmarks.length && <p className="warning">No se detectó una persona en este instante. Prueba una toma de cuerpo completo, con buena luz y sin obstrucciones.</p>}
+      {!!frame?.landmarks.length && visible<33 && <p className="quality-note">Los puntos grises son estimaciones poco confiables: sus articulaciones quedan como <b>no evaluables</b>. El color verde indica visibilidad, no técnica correcta.</p>}
+      {kind==='video' && <div className="playback">
+        <button className="play-button" onClick={()=>{if(!video.current)return;if(video.current.paused)video.current.play().catch(()=>setError('Pulsa reproducir en el video.'));else video.current.pause();}}>{playing?'Pausar':'Reproducir'}</button>
+        <input aria-label="Línea de tiempo" type="range" min="0" max={motion.duration_ms/1000} step=".01" value={time} onChange={e=>{const t=Number(e.target.value);if(video.current)video.current.currentTime=t;setTime(t);}}/>
+        <span>{time.toFixed(1)} / {(motion.duration_ms/1000).toFixed(1)} s</span>
+        <select aria-label="Velocidad de reproducción" value={speed} onChange={e=>setSpeed(Number(e.target.value))}>{[.25,.5,1,1.5,2].map(s=><option key={s} value={s}>{s}×</option>)}</select>
+      </div>}
+    </section>}
+    <section className="notice"><span>ⓘ</span><p><b>Postura estimada, no evaluación médica.</b> Una imagen ofrece una pose estática. La cámara, ropa, iluminación y partes ocultas afectan el resultado. Girar el muñeco permite explorar la estimación; no revela información que la cámara no captó.</p></section>
+    <footer>VISION3D AI <span>·</span> Procesamiento local · tus archivos se eliminan del servicio al terminar</footer>
+  </main>;
 }

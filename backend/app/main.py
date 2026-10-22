@@ -1,120 +1,57 @@
-from __future__ import annotations
-
-import os
-import tempfile
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
-import cv2
-import mediapipe as mp
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from mediapipe.tasks import python
-from mediapipe.tasks.python import vision
+from starlette.concurrency import run_in_threadpool
 
-MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "pose_landmarker_lite.task"
-SAMPLE_MS = 100
-MAX_UPLOAD_BYTES = 100 * 1024 * 1024
-LANDMARK_NAMES = (
-    "nose", "left_eye_inner", "left_eye", "left_eye_outer", "right_eye_inner", "right_eye", "right_eye_outer",
-    "left_ear", "right_ear", "mouth_left", "mouth_right", "left_shoulder", "right_shoulder",
-    "left_elbow", "right_elbow", "left_wrist", "right_wrist", "left_pinky", "right_pinky",
-    "left_index", "right_index", "left_thumb", "right_thumb", "left_hip", "right_hip",
-    "left_knee", "right_knee", "left_ankle", "right_ankle", "left_heel", "right_heel",
-    "left_foot_index", "right_foot_index",
-)
+from .pose import MODEL_PATH, extract_image, extract_video
 
-app = FastAPI(title="VISION3D AI - Pose Prototype", version="0.1.0")
+app = FastAPI(title="VISION3D AI", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"], allow_headers=["*"],
 )
 
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "model": "ready" if MODEL_PATH.is_file() else "missing"}
+def health():
+    return {"service": "vision3d-ai", "status": "ok", "model": "ready" if MODEL_PATH.is_file() else "missing"}
+
+
+async def process(upload: UploadFile, kind: str):
+    try:
+        if not MODEL_PATH.is_file():
+            raise HTTPException(503, "Falta el modelo. Ejecuta scripts/download_pose_model.py desde backend.")
+        limit = (20 if kind == "image" else 100) * 1024 * 1024
+        with TemporaryDirectory(prefix="vision3d-") as directory:
+            # Decode content instead of trusting the original extension or MIME type.
+            path = Path(directory) / "input"
+            size = 0
+            with path.open("wb") as stream:
+                while chunk := await upload.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > limit:
+                        raise HTTPException(413, f"El archivo supera el límite de {limit // 1024 // 1024} MB.")
+                    stream.write(chunk)
+            if size == 0:
+                raise HTTPException(422, "El archivo está vacío.")
+            try:
+                result = await run_in_threadpool(extract_image if kind == "image" else extract_video, path)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            result["filename"] = Path(upload.filename or "archivo").name
+            return result
+    finally:
+        await upload.close()
+
+
+@app.post("/api/analyze-image")
+async def analyze_image(image: UploadFile = File(...)):
+    return await process(image, "image")
 
 
 @app.post("/api/analyze")
-async def analyze(video: UploadFile = File(...)) -> dict:
-    if video.content_type not in {"video/mp4", "video/quicktime", "video/x-m4v", "application/octet-stream"}:
-        raise HTTPException(status_code=415, detail="Formato no admitido. Sube un video MP4 o M4V.")
-    if not MODEL_PATH.is_file():
-        raise HTTPException(status_code=503, detail="Falta el modelo. Ejecuta backend/scripts/download_pose_model.py.")
-
-    suffix = Path(video.filename or "video.mp4").suffix.lower()
-    if suffix not in {".mp4", ".m4v", ".mov"}:
-        suffix = ".mp4"
-
-    temp_path: str | None = None
-    try:
-        data = await video.read(MAX_UPLOAD_BYTES + 1)
-        if not data or len(data) > MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=413, detail="El video debe pesar menos de 100 MB.")
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp:
-            temp.write(data)
-            temp_path = temp.name
-
-        capture = cv2.VideoCapture(temp_path)
-        if not capture.isOpened():
-            raise HTTPException(status_code=422, detail="No se pudo abrir el video.")
-        fps = capture.get(cv2.CAP_PROP_FPS) or 0
-        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-        if fps <= 0 or frame_count <= 0:
-            capture.release()
-            raise HTTPException(status_code=422, detail="El video no informa una duración o frecuencia válida.")
-
-        options = vision.PoseLandmarkerOptions(
-            base_options=python.BaseOptions(model_asset_path=str(MODEL_PATH)),
-            running_mode=vision.RunningMode.VIDEO,
-            num_poses=1,
-            output_segmentation_masks=False,
-        )
-        poses: list[dict] = []
-        next_sample = 0
-        with vision.PoseLandmarker.create_from_options(options) as landmarker:
-            frame_index = 0
-            while True:
-                ok, frame = capture.read()
-                if not ok:
-                    break
-                timestamp_ms = round(frame_index * 1000 / fps)
-                if timestamp_ms >= next_sample:
-                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    result = landmarker.detect_for_video(
-                        mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), timestamp_ms
-                    )
-                    landmarks = []
-                    if result.pose_landmarks:
-                        landmarks = [
-                            {
-                                "x": point.x,
-                                "y": point.y,
-                                "z": point.z,
-                                "visibility": point.visibility,
-                                "presence": point.presence,
-                            }
-                            for point in result.pose_landmarks[0]
-                        ]
-                    poses.append({"timestamp_ms": timestamp_ms, "landmarks": landmarks})
-                    next_sample = timestamp_ms + SAMPLE_MS
-                frame_index += 1
-        capture.release()
-        return {
-            "filename": video.filename,
-            "duration_ms": round(frame_count * 1000 / fps),
-            "width": width,
-            "height": height,
-            "sample_interval_ms": SAMPLE_MS,
-            "landmark_schema": "MediaPipe Pose Landmarker; normalized image coordinates",
-            "landmark_names": list(LANDMARK_NAMES),
-            "frames": poses,
-        }
-    finally:
-        await video.close()
-        if temp_path and os.path.exists(temp_path):
-            os.unlink(temp_path)
+async def analyze(video: UploadFile = File(...)):
+    return await process(video, "video")
