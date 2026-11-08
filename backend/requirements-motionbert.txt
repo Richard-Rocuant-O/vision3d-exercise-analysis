@@ -1,0 +1,2 @@
+# Optional video estimator. The regular application works without PyTorch.
+torch>=2.6,<3

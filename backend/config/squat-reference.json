@@ -1,0 +1,8 @@
+{
+  "exercise": "Squat",
+  "reference_video": "Ejercicios/squat/squat_01.mp4",
+  "motion_file": "data/references/squat_01.json",
+  "version": "squat-demo-1",
+  "review": {"status": "pending", "reviewer": null, "reviewed_at": null},
+  "criteria": []
+}

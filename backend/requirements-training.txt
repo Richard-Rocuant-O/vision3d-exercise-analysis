@@ -1,0 +1,2 @@
+# Optional, only for fitting the exercise classifier. Runtime inference uses NumPy.
+scikit-learn==1.6.1

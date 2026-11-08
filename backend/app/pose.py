@@ -9,7 +9,10 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "pose_landmarker_lite.task"
-SAMPLE_MS = 100
+# Decode and estimate every frame. Temporal estimators need continuous input.
+SAMPLE_MS = 0
+MAX_VIDEO_FRAMES = 3600
+MAX_SEGMENT_SECONDS = 60
 LANDMARK_NAMES = (
     "nose", "left_eye_inner", "left_eye", "left_eye_outer", "right_eye_inner", "right_eye", "right_eye_outer",
     "left_ear", "right_ear", "mouth_left", "mouth_right", "left_shoulder", "right_shoulder",
@@ -73,7 +76,11 @@ def extract_image(path):
     return response("image", width, height, [serialize(result, 0, 0)])
 
 
-def extract_video(path):
+def extract_video(path, start_seconds=0.0, duration_seconds=MAX_SEGMENT_SECONDS):
+    if not math.isfinite(start_seconds) or start_seconds < 0:
+        raise ValueError("El inicio del tramo debe ser un número igual o mayor que cero.")
+    if not math.isfinite(duration_seconds) or not 0 < duration_seconds <= MAX_SEGMENT_SECONDS:
+        raise ValueError("Elige un tramo de más de 0 y hasta 60 segundos.")
     capture = cv2.VideoCapture(str(path))
     try:
         if not capture.isOpened():
@@ -82,11 +89,20 @@ def extract_video(path):
         count = capture.get(cv2.CAP_PROP_FRAME_COUNT)
         if not math.isfinite(fps) or fps <= 0 or not math.isfinite(count) or count <= 0:
             raise ValueError("El video no informa una duración válida.")
-        if count / fps > 60:
-            raise ValueError("Para esta prueba, selecciona un video de hasta 60 segundos.")
+        source_duration_ms = round(count * 1000 / fps)
+        start_ms = round(start_seconds * 1000)
+        end_ms = start_ms + round(duration_seconds * 1000)
+        if start_ms >= source_duration_ms:
+            raise ValueError("El inicio del tramo queda fuera del video. Elige un segundo anterior al final.")
         width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        frames, index, last_decoded, next_sample = [], 0, -1, 0
+        frames, index, last_decoded = [], 0, -1
         fallback = False
+        if start_ms:
+            if not capture.set(cv2.CAP_PROP_POS_MSEC, start_ms):
+                raise ValueError("No se pudo buscar ese tramo. Prueba desde el segundo 0 o usa un MP4 H.264.")
+            position = capture.get(cv2.CAP_PROP_POS_FRAMES)
+            if math.isfinite(position) and position >= 0:
+                index = round(position)
         with create_landmarker(vision.RunningMode.VIDEO) as detector:
             while True:
                 ok, frame = capture.read()
@@ -94,23 +110,35 @@ def extract_video(path):
                     break
                 pts = capture.get(cv2.CAP_PROP_POS_MSEC)
                 timestamp = round(pts) if math.isfinite(pts) and pts >= 0 else -1
-                if timestamp <= last_decoded:
+                if timestamp <= last_decoded or (not frames and start_ms and index > 0 and timestamp == 0):
                     timestamp = max(last_decoded + 1, round(index * 1000 / fps))
                     fallback = True
                 last_decoded = timestamp
-                if timestamp > 60_000:
-                    raise ValueError("El video supera los 60 segundos.")
-                if timestamp >= next_sample:
-                    if max(frame.shape[:2]) > 1920:
-                        scale = 1920 / max(frame.shape[:2])
-                        frame = cv2.resize(frame, (round(width * scale), round(height * scale)))
-                    result = detector.detect_for_video(rgb_image(frame), timestamp)
-                    frames.append(serialize(result, timestamp, index))
-                    next_sample = timestamp + SAMPLE_MS
+                if timestamp >= end_ms:
+                    break
+                if timestamp < start_ms:
+                    index += 1
+                    continue
+                if len(frames) >= MAX_VIDEO_FRAMES:
+                    raise ValueError("El tramo supera los 3600 fotogramas. Elige una duración menor o reduce sus FPS.")
+                if max(frame.shape[:2]) > 1920:
+                    scale = 1920 / max(frame.shape[:2])
+                    frame = cv2.resize(frame, (round(width * scale), round(height * scale)))
+                result = detector.detect_for_video(rgb_image(frame), timestamp)
+                frames.append(serialize(result, timestamp, index))
                 index += 1
         if not frames:
             raise ValueError("El archivo no contiene fotogramas que se puedan leer.")
-        return response("video", width, height, frames, max(round(count * 1000 / fps), last_decoded),
-                        "opencv_pts_with_fps_fallback" if fallback else "opencv_pts")
+        actual_end_ms = min(end_ms, frames[-1]["timestamp_ms"] + max(1, round(1000 / fps)))
+        motion = response("video", width, height, frames, max(source_duration_ms, actual_end_ms),
+                          "opencv_pts_with_fps_fallback" if fallback else "opencv_pts")
+        motion["source_fps"] = fps
+        motion["sampling"] = "every_decoded_frame"
+        motion["analysis_window"] = {
+            "start_ms": frames[0]["timestamp_ms"], "end_ms": actual_end_ms,
+            "requested_start_ms": start_ms, "requested_duration_ms": round(duration_seconds * 1000),
+            "source_duration_ms": source_duration_ms,
+        }
+        return motion
     finally:
         capture.release()

@@ -1,13 +1,17 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Annotated
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 
 from .pose import MODEL_PATH, extract_image, extract_video
+from .dataset import router as dataset_router
+from .feedback import analyze_feedback
 
 app = FastAPI(title="VISION3D AI", version="0.2.0")
+app.include_router(dataset_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -20,7 +24,8 @@ def health():
     return {"service": "vision3d-ai", "status": "ok", "model": "ready" if MODEL_PATH.is_file() else "missing"}
 
 
-async def process(upload: UploadFile, kind: str):
+async def process(upload: UploadFile, kind: str, start_seconds=0.0, duration_seconds=60.0,
+                  compare_to_example=True, tolerance_degrees=15.0):
     try:
         if not MODEL_PATH.is_file():
             raise HTTPException(503, "Falta el modelo. Ejecuta scripts/download_pose_model.py desde backend.")
@@ -38,7 +43,9 @@ async def process(upload: UploadFile, kind: str):
             if size == 0:
                 raise HTTPException(422, "El archivo está vacío.")
             try:
-                result = await run_in_threadpool(extract_image if kind == "image" else extract_video, path)
+                result = await run_in_threadpool(extract_image, path) if kind == "image" else await run_in_threadpool(
+                    extract_video, path, start_seconds, duration_seconds)
+                result = await run_in_threadpool(analyze_feedback, result, compare_to_example, tolerance_degrees)
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
             result["filename"] = Path(upload.filename or "archivo").name
@@ -53,5 +60,9 @@ async def analyze_image(image: UploadFile = File(...)):
 
 
 @app.post("/api/analyze")
-async def analyze(video: UploadFile = File(...)):
-    return await process(video, "video")
+async def analyze(video: UploadFile = File(...),
+                  start_seconds: Annotated[float, Form(ge=0, allow_inf_nan=False)] = 0.0,
+                  duration_seconds: Annotated[float, Form(gt=0, le=60, allow_inf_nan=False)] = 60.0,
+                  compare_to_example: Annotated[bool, Form()] = True,
+                  tolerance_degrees: Annotated[float, Form(ge=5, le=45, allow_inf_nan=False)] = 15.0):
+    return await process(video, "video", start_seconds, duration_seconds, compare_to_example, tolerance_degrees)

@@ -7,6 +7,9 @@ data/
 *.webm
 *.mkv
 *.task
+backend/models/*.bin
+backend/models/*.pth
+backend/models/*.download
 
 # Dependencias y entornos
 node_modules/
@@ -14,6 +17,7 @@ dist/
 .venv/
 venv/
 .deps/
+.training-deps/
 __pycache__/
 *.py[cod]
 .env

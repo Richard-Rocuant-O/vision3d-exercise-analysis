@@ -1,0 +1,19 @@
+{
+  "description": "Exercise labels follow the user's folder organization. No technique quality labels.",
+  "training": [
+    {"label": "Squat", "path": "Ejercicios/squat/squat_01.mp4"},
+    {"label": "Push-up", "path": "Ejercicios/push_up/push_up_01.mp4"},
+    {"label": "Pull-up", "path": "Ejercicios/pull_up/pull_up.mp4"},
+    {"label": "Shoulder press", "path": "Ejercicios/shoulder_press/shoulder_press_01.mp4"},
+    {"label": "Lunges", "path": "Ejercicios/lunges/591. Zancada lateral.mp4"},
+    {"label": "Plank", "path": "Ejercicios/plank/Plancha Lateral.mp4"},
+    {"label": "Glute bridge", "path": "Ejercicios/glute_bridge/Puente de Glúteos Variación Pulso & Hold.mp4"},
+    {"label": "Chest dips", "path": "Ejercicios/chest_dips/Fondos de Pectoral en suelo.mp4"},
+    {"label": "Bent-over row", "path": "Ejercicios/bent_over_row/REMO INCLINADO CON MANCUERNAS - NicoCastFit.mp4"}
+  ],
+  "holdout": [
+    {"label": "Squat", "path": "Ejercicios/squat/squat_02.mp4"},
+    {"label": "Squat", "path": "Ejercicios/squat/squat_03.mp4"},
+    {"label": "Squat", "path": "Ejercicios/squat/squat_4.mp4"}
+  ]
+}
